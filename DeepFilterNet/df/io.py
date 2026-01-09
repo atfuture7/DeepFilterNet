@@ -3,28 +3,23 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torchaudio as ta
+import torchcodec.decoders as decoders
+import torchcodec.encoders as encoders
 from loguru import logger
 from numpy import ndarray
 from torch import Tensor
 
-try:
-    from torchaudio import AudioMetaData
+TA_RESAMPLE_SINC = "sinc_interp_hann"
+TA_RESAMPLE_KAISER = "sinc_interp_kaiser"
 
-    TA_RESAMPLE_SINC = "sinc_interp_hann"
-    TA_RESAMPLE_KAISER = "sinc_interp_kaiser"
-except ImportError:
-    from torchaudio.backend.common import AudioMetaData
-
-    TA_RESAMPLE_SINC = "sinc_interpolation"
-    TA_RESAMPLE_KAISER = "kaiser_window"
 
 from df.logger import warn_once
 from df.utils import download_file, get_cache_dir, get_git_root
 
-
+# update load/save to newer version (with torchcodec)
 def load_audio(
     file: str, sr: Optional[int] = None, verbose=True, **kwargs
-) -> Tuple[Tensor, AudioMetaData]:
+) -> Tuple[Tensor, int]:
     """Loads an audio file using torchaudio.
 
     Args:
@@ -43,18 +38,15 @@ def load_audio(
     rkwargs = {}
     if "method" in kwargs:
         rkwargs["method"] = kwargs.pop("method")
-    info: AudioMetaData = ta.info(file, **ikwargs)
-    if "num_frames" in kwargs and sr is not None:
-        kwargs["num_frames"] *= info.sample_rate // sr
-    audio, orig_sr = ta.load(file, **kwargs)
-    if sr is not None and orig_sr != sr:
-        if verbose:
-            warn_once(
-                f"Audio sampling rate does not match model sampling rate ({orig_sr}, {sr}). "
-                "Resampling..."
-            )
-        audio = resample(audio, orig_sr, sr, **rkwargs)
-    return audio.contiguous(), info
+    # 1. Initialize the decoder for the given file
+    decoder = decoders.AudioDecoder(file, **ikwargs)
+    # 2. Extract the sample rate from the metadata
+    # torchcodec stores metadata in the 'metadata' attribute
+    sample_rate = decoder.metadata.sample_rate
+
+    waveform = decoder.get_all_samples()
+
+    return waveform.data.contiguous(), sample_rate
 
 
 def save_audio(
@@ -77,11 +69,15 @@ def save_audio(
     audio = torch.as_tensor(audio)
     if audio.ndim == 1:
         audio.unsqueeze_(0)
-    if dtype == torch.int16 and audio.dtype != torch.int16:
-        audio = (audio * (1 << 15)).to(torch.int16)
-    if dtype == torch.float32 and audio.dtype != torch.float32:
-        audio = audio.to(torch.float32) / (1 << 15)
-    ta.save(outpath, audio, sr)
+#    if dtype == torch.int16 and audio.dtype != torch.int16:
+#        audio = (audio * (1 << 15)).to(torch.int16)
+#    if dtype == torch.float32 and audio.dtype != torch.float32:
+#        audio = audio.to(torch.float32) / (1 << 15)
+#    #ta.save(outpath, audio, sr)
+    if audio.dtype != torch.float32:
+        audio = audio.to(torch.float32)
+    encoder = encoders.AudioEncoder(audio, sample_rate=sr)
+    encoder.to_file(outpath)
 
 
 try:
@@ -92,8 +88,14 @@ except ImportError:
 
 def get_resample_params(method: str) -> Dict[str, Any]:
     params = {
-        "sinc_fast": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 16},
-        "sinc_best": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 64},
+        "sinc_fast": {
+            "resampling_method": TA_RESAMPLE_SINC, 
+            "lowpass_filter_width": 16
+        },
+        "sinc_best": {
+            "resampling_method": TA_RESAMPLE_SINC, 
+            "lowpass_filter_width": 64
+        },
         "kaiser_fast": {
             "resampling_method": TA_RESAMPLE_KAISER,
             "lowpass_filter_width": 16,
@@ -113,8 +115,9 @@ def get_resample_params(method: str) -> Dict[str, Any]:
 
 def resample(audio: Tensor, orig_sr: int, new_sr: int, method="sinc_fast"):
     params = get_resample_params(method)
-    return ta_resample(audio, orig_sr, new_sr, **params)
-
+#    waveform = ta.functional.resample(audio, orig_sr, new_sr, **params)
+    waveform = ta_resample(audio, orig_sr, new_sr, **params)
+    return waveform
 
 def get_test_sample(sr: int = 48000) -> Tensor:
     dir = get_git_root()
