@@ -37,8 +37,8 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, index) -> Tuple[str, Tensor, int]:
         fn = self.files[index]
-        audio, meta = load_audio(fn, self.sr, "cpu")
-        return fn, audio, meta.sample_rate
+        audio, sample_rate = load_audio(fn, self.sr, "cpu")
+        return fn, audio, sample_rate
 
     def __len__(self):
         return len(self.files)
@@ -70,14 +70,21 @@ def main(args):
     ds = AudioDataset(input_files, df_sr)
     loader = DataLoader(ds, num_workers=2, pin_memory=True)
     n_samples = len(ds)
+    print(f"n_samples: {n_samples}")
     for i, (file, audio, audio_sr) in enumerate(loader):
         file = file[0]
+        print(f"file: {file}")
         audio = audio.squeeze(0)
+#        # review audio
+#        save_audio(file, audio, sr=audio_sr, output_dir=args.output_dir, suffix="-test2", log=False)
         progress = (i + 1) / n_samples * 100
         t0 = time.time()
         audio = enhance(
             model, df_state, audio, pad=args.compensate_delay, atten_lim_db=args.atten_lim
         )
+#        # review audio
+        # uncertain-start
+        # The result of resampling is not good enough to me. I marked out this block on my version
         t1 = time.time()
         t_audio = audio.shape[-1] / df_sr
         t = t1 - t0
@@ -86,6 +93,7 @@ def main(args):
         p_str = f"{progress:2.0f}% | " if n_samples > 1 else ""
         logger.info(f"{p_str}Enhanced noisy audio file '{fn}' in {t:.2f}s (RT factor: {rtf:.3f})")
         audio = resample(audio.to("cpu"), df_sr, audio_sr)
+        # uncertain-end
         save_audio(file, audio, sr=audio_sr, output_dir=args.output_dir, suffix=suffix, log=False)
 
 
